@@ -33,14 +33,19 @@ fn main() -> ! {
     rcc.pllcfgr.modify(|_, w| w.pllsrc().hse());
     rcc.pllcfgr.modify(unsafe {|_, w| w.pllm().bits(4)});
     rcc.pllcfgr.modify(unsafe {|_, w| w.plln().bits(108)});
-    rcc.pllcfgr.modify(|_, w| w.pllp().div4());
+    rcc.pllcfgr.modify(|_, w| w.pllp().div2());
 
     rcc.cr.modify(|_, w| w.pllon().on());
     while rcc.cr.read().pllrdy().is_not_ready() {}
     println!("Pll ready");
 
-    dp.FLASH.acr.modify(|_, w| w.latency().ws3());
-    while !dp.FLASH.acr.read().latency().is_ws3() {}
+    dp.FLASH.acr.modify(|_, w| w.latency().ws9());
+    while !dp.FLASH.acr.read().latency().is_ws9() {}
+
+    rcc.cfgr.modify(|_, w| w
+        .ppre1().div2()
+        .ppre2().div2()
+    );
 
     rcc.cfgr.modify(|_, w| w.sw().pll());
     while !rcc.cfgr.read().sws().is_pll() {}
@@ -57,7 +62,7 @@ fn main() -> ! {
     gpio_a.afrl.write(|w| w.afrl6().af2()); 
 
     unsafe {
-        tim.arr.write(|w| w.bits(23)); // frequency
+        tim.arr.write(|w| w.bits(26)); // frequency
         tim.ccr1().write(|w| w.bits(0));// duty cycle
     }
 
@@ -82,7 +87,8 @@ fn main() -> ! {
 
     unsafe {
         let ccr1_addr = tim.ccr1() as *const _ as u32;
-        let dma_buf: [u32; 8] = [4, 6, 6, 8, 0, 0, 0, 0];
+        let dma_buf = [9, 18, 18, 9, 18, 0, 9, 0, 0];
+        // let dma_buf = [6, 9, 9, 12, 0, 0, 0];
 
         dma1.st[4].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
         dma1.st[4].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
