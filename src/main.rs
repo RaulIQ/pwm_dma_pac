@@ -14,19 +14,33 @@ fn main() -> ! {
     let tim = dp.TIM3;
     let gpio_a = dp.GPIOA;
     let dma1 = dp.DMA1;
+    let pwr = dp.PWR;
 
-    rcc.cr.write(|w| w.hseon().on());
+    rcc.apb1enr.modify(|_, w| w.pwren().set_bit());
+
+    pwr.cr1.modify(|_, w| w.vos().scale1());
+
+    pwr.cr1.modify(|_, w| w.oden().set_bit());
+    while pwr.csr1.read().odrdy().bit_is_clear() {}
+
+    pwr.cr1.modify(|_, w| w.odswen().set_bit());
+    while pwr.csr1.read().odswrdy().bit_is_clear() {}
+
+    rcc.cr.modify(|_, w| w.hseon().on());
     while rcc.cr.read().hserdy().is_not_ready() {}
     println!("Hse ready");
 
     rcc.pllcfgr.modify(|_, w| w.pllsrc().hse());
     rcc.pllcfgr.modify(unsafe {|_, w| w.pllm().bits(4)});
     rcc.pllcfgr.modify(unsafe {|_, w| w.plln().bits(108)});
-    rcc.pllcfgr.modify(|_, w| w.pllp().div6());
+    rcc.pllcfgr.modify(|_, w| w.pllp().div4());
 
     rcc.cr.modify(|_, w| w.pllon().on());
     while rcc.cr.read().pllrdy().is_not_ready() {}
     println!("Pll ready");
+
+    dp.FLASH.acr.modify(|_, w| w.latency().ws3());
+    while !dp.FLASH.acr.read().latency().is_ws3() {}
 
     rcc.cfgr.modify(|_, w| w.sw().pll());
     while !rcc.cfgr.read().sws().is_pll() {}
@@ -68,7 +82,7 @@ fn main() -> ! {
 
     unsafe {
         let ccr1_addr = tim.ccr1() as *const _ as u32;
-        let dma_buf = [8, 12, 12, 16, 0, 0, 0, 0];
+        let dma_buf: [u32; 8] = [4, 6, 6, 8, 0, 0, 0, 0];
 
         dma1.st[4].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
         dma1.st[4].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
@@ -80,8 +94,8 @@ fn main() -> ! {
             .mburst().single()
             .pburst().single()
             .pl().high()
-            .msize().bits32()
-            .psize().bits32()
+            .msize().bits32() // value depends on the type of buffer elements 
+            .psize().bits32() // value depends on the type of buffer elements 
             .minc().set_bit()
             .pinc().clear_bit()
             .circ().enabled()
@@ -93,6 +107,5 @@ fn main() -> ! {
         );
     }
 
-    loop {
-    }
+    loop {}
 }
