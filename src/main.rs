@@ -3,7 +3,7 @@
 
 use cortex_m_rt::entry;
 use defmt::println;
-use stm32f7xx_hal::pac::{self};
+use stm32f7xx_hal::pac::{self, tim2::dmar};
 use {defmt_rtt as _, panic_probe as _};
 
 
@@ -15,16 +15,6 @@ fn main() -> ! {
     let gpio_a = dp.GPIOA;
     let dma1 = dp.DMA1;
     let pwr = dp.PWR;
-
-    rcc.apb1enr.modify(|_, w| w.pwren().set_bit());
-
-    pwr.cr1.modify(|_, w| w.vos().scale1());
-
-    pwr.cr1.modify(|_, w| w.oden().set_bit());
-    while pwr.csr1.read().odrdy().bit_is_clear() {}
-
-    pwr.cr1.modify(|_, w| w.odswen().set_bit());
-    while pwr.csr1.read().odswrdy().bit_is_clear() {}
 
     rcc.cr.modify(|_, w| w.hseon().on());
     while rcc.cr.read().hserdy().is_not_ready() {}
@@ -62,7 +52,7 @@ fn main() -> ! {
     gpio_a.afrl.write(|w| w.afrl6().af2()); 
 
     unsafe {
-        tim.arr.write(|w| w.bits(26)); // frequency
+        tim.arr.write(|w| w.bits(17)); // frequency
         tim.ccr1().write(|w| w.bits(0));// duty cycle
     }
 
@@ -77,25 +67,26 @@ fn main() -> ! {
     // enable auto-reload
     tim.cr1.modify(|_, w| w.arpe().set_bit());
     tim.dier.modify(|_, w| w.ude().set_bit());
-    tim.dier.modify(|_, w| w.cc1de().set_bit());
-    tim.dier.modify(|_, w| w.tde().set_bit());
+    tim.dier.modify(|_, w| w.cc1de().clear_bit());
+    tim.dcr.modify(|_, w| w.dba().bits(13));
     // enable update generation - needed at first start
     tim.egr.write(|w| w.ug().set_bit());
     tim.egr.write(|w| w.ug().set_bit());
     // start pwm
     tim.cr1.modify(|_, w| w.cen().set_bit());
 
+
     unsafe {
-        let ccr1_addr = tim.ccr1() as *const _ as u32;
-        let dma_buf = [9, 18, 18, 9, 18, 0, 9, 0, 0];
-        // let dma_buf = [6, 9, 9, 12, 0, 0, 0];
+        let dmar_addr = tim.dmar.as_ptr() as u32;
+        let dma_buf = [6, 9, 6, 9, 6, 9, 0, 0, 0];
+        // let dma_buf = [9, 18, 18, 9, 0, 18, 0];
 
-        dma1.st[4].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
-        dma1.st[4].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
-        dma1.st[4].par.write(|w| w.pa().bits(ccr1_addr));
+        dma1.st[2].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
+        dma1.st[2].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
+        dma1.st[2].par.write(|w| w.pa().bits(dmar_addr));
 
-        dma1.st[4].cr.reset();
-        dma1.st[4].cr.modify(|_, w| w
+        dma1.st[2].cr.reset();
+        dma1.st[2].cr.modify(|_, w| w
             .chsel().bits(5)
             .mburst().single()
             .pburst().single()
