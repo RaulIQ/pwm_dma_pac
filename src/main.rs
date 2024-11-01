@@ -52,7 +52,7 @@ fn main() -> ! {
     gpio_a.afrl.write(|w| w.afrl6().af2()); 
 
     unsafe {
-        tim.arr.write(|w| w.bits(17)); // frequency
+        tim.arr.write(|w| w.bits(26)); // frequency
         tim.ccr1().write(|w| w.bits(0));// duty cycle
     }
 
@@ -78,8 +78,10 @@ fn main() -> ! {
 
     unsafe {
         let dmar_addr = tim.dmar.as_ptr() as u32;
-        let dma_buf = [6, 9, 6, 9, 6, 9, 0, 0, 0];
+        let dma_buf: [u16; 8] = [9, 18, 9, 18, 0, 9, 0, 0];
         // let dma_buf = [9, 18, 18, 9, 0, 18, 0];
+
+        dma1.st[2].fcr.modify(|_, w| w.dmdis().set_bit());
 
         dma1.st[2].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
         dma1.st[2].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
@@ -88,11 +90,11 @@ fn main() -> ! {
         dma1.st[2].cr.reset();
         dma1.st[2].cr.modify(|_, w| w
             .chsel().bits(5)
-            .mburst().single()
+            .mburst().incr4()
             .pburst().single()
             .pl().high()
-            .msize().bits32() // value depends on the type of buffer elements 
-            .psize().bits32() // value depends on the type of buffer elements 
+            .msize().bits16() // value depends on the type of buffer elements 
+            .psize().bits16() // value depends on the type with which the peripheral operates 
             .minc().set_bit()
             .pinc().clear_bit()
             .circ().enabled()
