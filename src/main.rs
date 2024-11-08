@@ -6,9 +6,44 @@ use defmt::println;
 use stm32f7xx_hal::pac::{self, tim2::dmar};
 use {defmt_rtt as _, panic_probe as _};
 
+const ONE_THIRD: u16 = 120;
+const TWO_THIRD: u16 = 240;
+
+const DSHOT_FRAME_SIZE: usize = 16; // 16 bits per frame
+static mut DSHOT_FRAME: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+
+// Create DShot data packet
+fn create_dshot_packet(throttle: u16, telemetry: bool) -> u16 {
+    let mut packet = (throttle & 0x07FF) << 1; // 11-bit throttle
+    if telemetry {
+        packet |= 1; // Set telemetry bit if needed
+    }
+
+    let crc = ((packet ^ (packet >> 4) ^ (packet >> 8)) & 0x0F) as u16; // 4-bit CRC
+    (packet << 4) | crc
+}
+
+// Prepare DShot frame as array of pulse widths for each bit
+fn prepare_dshot_frame(packet: u16) {
+    for i in 0..DSHOT_FRAME_SIZE {
+        // Calculate each bit’s pulse width
+        let is_one = (packet & (1 << (15 - i))) != 0;
+        unsafe {
+            DSHOT_FRAME[i] = if is_one {
+                TWO_THIRD // Set for ~62.5% high pulse
+            } else {
+                ONE_THIRD // Set for ~37.5% high pulse
+            };
+        }
+    }
+}
 
 #[entry]
 fn main() -> ! {
+
+    let packet = create_dshot_packet(1046, false);
+    prepare_dshot_frame(packet);
+
     let dp = pac::Peripherals::take().unwrap();
     let rcc = dp.RCC;
     let tim = dp.TIM3;
@@ -52,7 +87,7 @@ fn main() -> ! {
     gpio_a.afrl.write(|w| w.afrl6().af2()); 
 
     unsafe {
-        tim.arr.write(|w| w.bits(26)); // frequency
+        tim.arr.write(|w| w.bits(359)); // frequency
         tim.ccr1().write(|w| w.bits(0));// duty cycle
     }
 
@@ -78,13 +113,13 @@ fn main() -> ! {
 
     unsafe {
         let dmar_addr = tim.dmar.as_ptr() as u32;
-        let dma_buf: [u16; 8] = [9, 18, 9, 18, 0, 9, 0, 0];
+
         // let dma_buf = [9, 18, 18, 9, 0, 18, 0];
 
         dma1.st[2].fcr.modify(|_, w| w.dmdis().set_bit());
 
-        dma1.st[2].m0ar.write(|w| w.m0a().bits(dma_buf.as_ptr() as u32));
-        dma1.st[2].ndtr.write(|w| w.ndt().bits(dma_buf.len() as u16));
+        dma1.st[2].m0ar.write(|w| w.m0a().bits(DSHOT_FRAME.as_ptr() as u32));
+        dma1.st[2].ndtr.write(|w| w.ndt().bits(DSHOT_FRAME_SIZE as u16));
         dma1.st[2].par.write(|w| w.pa().bits(dmar_addr));
 
         dma1.st[2].cr.reset();
