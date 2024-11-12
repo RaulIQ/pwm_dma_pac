@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::asm::nop;
 use cortex_m_rt::entry;
 use defmt::println;
 use stm32f7xx_hal::pac::{self};
@@ -9,7 +10,7 @@ use {defmt_rtt as _, panic_probe as _};
 // Constants for DShot protocol
 const ONE_THIRD: u16 = 120;
 const TWO_THIRD: u16 = 240;
-const DSHOT_FRAME_SIZE: usize = 16;
+const DSHOT_FRAME_SIZE: usize = 18;
 static mut DSHOT_FRAME: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
 
 // Create DShot data packet
@@ -24,7 +25,7 @@ fn create_dshot_packet(throttle: u16, telemetry: bool) -> u16 {
 
 // Prepare DShot frame as array of pulse widths for each bit
 fn prepare_dshot_frame(packet: u16) {
-    for i in 0..DSHOT_FRAME_SIZE {
+    for i in 0..DSHOT_FRAME_SIZE - 2 {
         let is_one = (packet & (1 << (15 - i))) != 0;
         unsafe {
             DSHOT_FRAME[i] = if is_one { TWO_THIRD } else { ONE_THIRD };
@@ -104,8 +105,21 @@ fn init_dma(dp: &pac::Peripherals) {
 
     rcc.ahb1enr.modify(|_, w| w.dma1en().set_bit());
 
+    dma1.lifcr.write(|w| w
+        .cfeif2().set_bit()  // Clear FIFO error interrupt flag
+        .cdmeif2().set_bit() // Clear direct mode error interrupt flag
+        .cteif2().set_bit()  // Clear transfer error interrupt flag
+        .chtif2().set_bit()  // Clear half-transfer interrupt flag
+        .ctcif2().set_bit()  // Clear transfer complete interrupt flag
+    );
+
     unsafe {
         let dmar_addr = tim.dmar.as_ptr() as u32;
+
+        dma1.st[2].fcr.modify(|_, w| w
+            .dmdis().set_bit()
+            .fth().full()
+        );
 
         dma1.st[2].fcr.modify(|_, w| w.dmdis().set_bit());
         dma1.st[2].m0ar.write(|w| w.m0a().bits(DSHOT_FRAME.as_ptr() as u32));
@@ -114,14 +128,14 @@ fn init_dma(dp: &pac::Peripherals) {
 
         dma1.st[2].cr.modify(|_, w| w
             .chsel().bits(5)
-            .mburst().incr4()
+            .mburst().single()
             .pburst().single()
             .pl().high()
             .msize().bits16()
             .psize().bits16()
             .minc().set_bit()
             .pinc().clear_bit()
-            .circ().enabled()
+            .circ().clear_bit()
             .dir().memory_to_peripheral()
             .teie().set_bit()
             .htie().set_bit()
@@ -131,18 +145,35 @@ fn init_dma(dp: &pac::Peripherals) {
     }
 }
 
+fn waveform_up(dp: &pac::Peripherals, frame: u16) {
+    let dma1= &dp.DMA1;
+    
+    let packet = create_dshot_packet(frame, false);
+    prepare_dshot_frame(packet);
+
+    init_dma(&dp);
+}
+
 #[entry]
 fn main() -> ! {
     let dp = pac::Peripherals::take().unwrap();
+
+    let tim = &dp.TIM3;
+    let dma1 = &dp.DMA1;
 
     init_clocks(&dp);
     init_gpio(&dp);
     init_tim3(&dp);
 
-    let packet = create_dshot_packet(1046, false);
-    prepare_dshot_frame(packet);
+    let arr = [1046, 999, 1046, 0];
 
-    init_dma(&dp);
+    loop {
+        for i in 0..4 {
+            waveform_up(&dp, arr[i]);
+            for _ in 0..10_000 {
+                nop();
+            }
+        }
 
-    loop {}
+    }
 }
