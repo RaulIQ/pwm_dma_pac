@@ -1,16 +1,50 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::asm::nop;
 use cortex_m_rt::entry;
 use defmt::println;
-use stm32f7xx_hal::pac::{self};
+use stm32f7xx_hal::{dma::Channel, pac::{self}};
 use {defmt_rtt as _, panic_probe as _};
 
 const ONE_THIRD: u16 = 120;
 const TWO_THIRD: u16 = 240;
 
 const DSHOT_FRAME_SIZE: usize = 16; // 16 bits per frame
-static mut DSHOT_FRAME: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+static mut DSHOT_FRAME_CH1: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+static mut DSHOT_FRAME_CH2: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+static mut DSHOT_FRAME_CH3: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+static mut DSHOT_FRAME_CH4: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
+
+static mut DSHOT_FRAMES: [u16; DSHOT_FRAME_SIZE * 4 + 8] = [0; DSHOT_FRAME_SIZE * 4 + 8];
+
+// Create DShot data packet
+fn create_dshot_packet(throttle: u16, telemetry: bool) -> u16 {
+    let mut packet = (throttle & 0x07FF) << 1; // 11-bit throttle
+    if telemetry {
+        packet |= 1; // Set telemetry bit if needed
+    }
+
+    let crc = ((packet ^ (packet >> 4) ^ (packet >> 8)) & 0x0F) as u16; // 4-bit CRC
+    (packet << 4) | crc
+}
+
+// Prepare DShot frame as array of pulse widths for each bit
+fn prepare_dshot_frame(packet: u16, ch: usize) {
+    let mut offset = 0;
+    for i in 0..(DSHOT_FRAME_SIZE) {
+        // Calculate each bit’s pulse width
+        let is_one = (packet & (1 << (15 - i))) != 0;
+        unsafe {
+            DSHOT_FRAMES[i + offset + ch] = if is_one {
+                TWO_THIRD // Set for ~62.5% high pulse
+            } else {
+                ONE_THIRD // Set for ~37.5% high pulse
+            };
+        }
+        offset += 3;
+    }
+}
 
 fn init_outputs(dp: &pac::Peripherals) {
     let rcc = &dp.RCC;
@@ -113,14 +147,22 @@ fn init_dma1(dp: &pac::Peripherals, dmar_addr: u32) {
 
     let dma1 = &dp.DMA1;
 
+    dma1.lifcr.write(|w| w
+        .cfeif2().set_bit()  // Clear FIFO error interrupt flag
+        .cdmeif2().set_bit() // Clear direct mode error interrupt flag
+        .cteif2().set_bit()  // Clear transfer error interrupt flag
+        .chtif2().set_bit()  // Clear half-transfer interrupt flag
+        .ctcif2().set_bit()  // Clear transfer complete interrupt flag
+    );
+
     unsafe {
         dma1.st[2].fcr.modify(|_, w| w
             .dmdis().set_bit()
             .fth().full()
         );
 
-        dma1.st[2].m0ar.write(|w| w.m0a().bits(DSHOT_FRAME.as_ptr() as u32));
-        dma1.st[2].ndtr.write(|w| w.ndt().bits(DSHOT_FRAME_SIZE as u16));
+        dma1.st[2].m0ar.write(|w| w.m0a().bits(DSHOT_FRAMES.as_ptr() as u32));
+        dma1.st[2].ndtr.write(|w| w.ndt().bits(DSHOT_FRAMES.len() as u16));
         dma1.st[2].par.write(|w| w.pa().bits(dmar_addr));
 
         dma1.st[2].cr.reset();
@@ -133,7 +175,7 @@ fn init_dma1(dp: &pac::Peripherals, dmar_addr: u32) {
             .psize().bits16() 
             .minc().set_bit()
             .pinc().clear_bit()
-            .circ().enabled()
+            .circ().clear_bit()
             .dir().memory_to_peripheral()
             .teie().clear_bit()
             .htie().clear_bit()
@@ -178,32 +220,6 @@ fn init_power_and_clock(dp: &pac::Peripherals) {
     println!("PLL selected");
 }
 
-// Create DShot data packet
-fn create_dshot_packet(throttle: u16, telemetry: bool) -> u16 {
-    let mut packet = (throttle & 0x07FF) << 1; // 11-bit throttle
-    if telemetry {
-        packet |= 1; // Set telemetry bit if needed
-    }
-
-    let crc = ((packet ^ (packet >> 4) ^ (packet >> 8)) & 0x0F) as u16; // 4-bit CRC
-    (packet << 4) | crc
-}
-
-// Prepare DShot frame as array of pulse widths for each bit
-fn prepare_dshot_frame(packet: u16) {
-    for i in 0..DSHOT_FRAME_SIZE {
-        // Calculate each bit’s pulse width
-        let is_one = (packet & (1 << (15 - i))) != 0;
-        unsafe {
-            DSHOT_FRAME[i] = if is_one {
-                TWO_THIRD // Set for ~62.5% high pulse
-            } else {
-                ONE_THIRD // Set for ~37.5% high pulse
-            };
-        }
-    }
-}
-
 #[entry]
 fn main() -> ! {
     let dp = &pac::Peripherals::take().unwrap();
@@ -214,14 +230,21 @@ fn main() -> ! {
     init_tim3(dp);
 
     let dmar_addr = tim.dmar.as_ptr() as u32;
-    init_dma1(dp, dmar_addr);
 
     let packet = create_dshot_packet(1046, false);
-    prepare_dshot_frame(packet);
+    println!("{:b}", packet);
+
+    prepare_dshot_frame(packet, 0);
+    prepare_dshot_frame(0, 1);
+    prepare_dshot_frame(packet, 2);
+    prepare_dshot_frame(packet, 3);
 
     unsafe {
-        println!("{}", DSHOT_FRAME);
+        println!("{:?}", DSHOT_FRAMES);
     }
 
-    loop {}
+    loop {
+        init_dma1(dp, dmar_addr);
+        for _ in 0..600 {nop();}
+    }
 }
