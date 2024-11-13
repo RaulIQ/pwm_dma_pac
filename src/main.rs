@@ -11,10 +11,6 @@ const ONE_THIRD: u16 = 120;
 const TWO_THIRD: u16 = 240;
 
 const DSHOT_FRAME_SIZE: usize = 16; // 16 bits per frame
-static mut DSHOT_FRAME_CH1: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
-static mut DSHOT_FRAME_CH2: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
-static mut DSHOT_FRAME_CH3: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
-static mut DSHOT_FRAME_CH4: [u16; DSHOT_FRAME_SIZE] = [0; DSHOT_FRAME_SIZE];
 
 static mut DSHOT_FRAMES: [u16; DSHOT_FRAME_SIZE * 4 + 8] = [0; DSHOT_FRAME_SIZE * 4 + 8];
 
@@ -31,18 +27,16 @@ fn create_dshot_packet(throttle: u16, telemetry: bool) -> u16 {
 
 // Prepare DShot frame as array of pulse widths for each bit
 fn prepare_dshot_frame(packet: u16, ch: usize) {
-    let mut offset = 0;
     for i in 0..(DSHOT_FRAME_SIZE) {
         // Calculate each bit’s pulse width
         let is_one = (packet & (1 << (15 - i))) != 0;
         unsafe {
-            DSHOT_FRAMES[i + offset + ch] = if is_one {
+            DSHOT_FRAMES[i * 4 + ch] = if is_one {
                 TWO_THIRD // Set for ~62.5% high pulse
             } else {
                 ONE_THIRD // Set for ~37.5% high pulse
             };
         }
-        offset += 3;
     }
 }
 
@@ -231,17 +225,27 @@ fn main() -> ! {
 
     let dmar_addr = tim.dmar.as_ptr() as u32;
 
-    let packet = create_dshot_packet(1046, false);
-    println!("{:b}", packet);
+    let packet = create_dshot_packet(0, false);
 
     prepare_dshot_frame(packet, 0);
-    prepare_dshot_frame(0, 1);
+    prepare_dshot_frame(packet, 1);
     prepare_dshot_frame(packet, 2);
     prepare_dshot_frame(packet, 3);
 
-    unsafe {
-        println!("{:?}", DSHOT_FRAMES);
+    for _ in 0..30_000 {
+        init_dma1(dp, dmar_addr);
+        for _ in 0..600 {nop();}
     }
+
+    let packet1 = create_dshot_packet(1046, false);
+    let packet2 = create_dshot_packet(250, false);
+    let packet3 = create_dshot_packet(250, false);
+    let packet4 = create_dshot_packet(1046, false);
+
+    prepare_dshot_frame(packet1, 0);
+    prepare_dshot_frame(packet2, 1);
+    prepare_dshot_frame(packet3, 2);
+    prepare_dshot_frame(packet4, 3);
 
     loop {
         init_dma1(dp, dmar_addr);
